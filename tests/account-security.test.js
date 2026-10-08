@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { auth, getUser, passwordHash, digest, SESSION_MAX_AGE, cleanupSessions } from '../server/auth.js';
+import { database, schema } from '../server/database.js';
+import { media, MAX_AVATAR_BYTES, MAX_TOTAL_AVATAR_BYTES } from '../server/media.js';
+import { createDB, request, call, cookieOf, register } from './account-support.js';
+
+const DB = createDB(), env = { DB }, password = 'A-real-password-123!';
+assert.equal((await call(auth, request('/api/auth/me'), {})).status, 503);
+const initialized = await database(env);
+assert.equal(initialized.AUTH_SECRET.length, 64);
+assert.equal((await database({ DB, extra: 'new-environment' })).extra, 'new-environment');
+assert.equal((await database(env)).AUTH_SECRET, initialized.AUTH_SECRET);
+const sqlFile = await readFile(new URL('../db/schema.sql', import.meta.url), 'utf8');
+for (const statement of schema) assert.ok(sqlFile.includes(statement), 'SQL file and runtime schema agree');
+await DB.prepare('INSERT INTO translation_usage VALUES(?,?,?,?)').bind('__global__', '2026-10-05', 'vision', 1).run();
+console.log('PASS: real D1 requirement, stable automatic installation secret, consistent schema, global quota sentinel');
+
+const account = await register(auth, env, 'Dragon Reader', 'reader@example.com');
+const raw = account.cookie.split('=')[1], user = DB.sqlite.prepare('SELECT * FROM users WHERE id=?').get(account.user.id);
+const session = DB.sqlite.prepare('SELECT * FROM sessions WHERE user_id=?').get(user.id);
+assert.notEqual(user.password_hash, password); assert.match(user.password_hash, /^v1\$[a-f0-9]{64}$/); assert.equal(user.password_salt.length, 32);
+assert.equal(await passwordHash(password, user.password_salt, initialized.AUTH_SECRET), user.password_hash);
+assert.equal(session.token_hash, await digest(raw)); assert.notEqual(session.token_hash, raw);
+const login = await call(auth, request('/api/auth/login', { method: 'POST', data: { email: 'READER@example.com', password } }), env);
+assert.equal(login.status, 200); assert.match(login.headers.get('Set-Cookie'), /HttpOnly/); assert.match(login.headers.get('Set-Cookie'), /SameSite=Lax/); assert.match(login.headers.get('Set-Cookie'), /Secure/); assert.match(login.headers.get('Set-Cookie'), new RegExp(`Max-Age=${SESSION_MAX_AGE}`));
+assert.equal((await call(auth, request('/api/auth/login', { method: 'POST', data: { email: 'reader@example.com', password: 'incorrect-password' } }), env)).status, 401);
+assert.equal((await call(auth, request('/api/auth/register', { method: 'POST', data: { name: 'dragon reader', email: 'another@example.com', password } }), env)).status, 409);
+assert.equal((await call(auth, request('/api/auth/login', { method: 'POST', origin: 'https://evil.test', data: { email: 'reader@example.com', password } }), env)).status, 403);
+const loginCookie = cookieOf(login), me = await call(auth, request('/api/auth/me', { cookie: loginCookie }), env), meBody = await me.json();
+assert.equal(meBody.user.email, 'reader@example.com'); assert.equal(meBody.user.id, user.id); assert.ok(!JSON.stringify(meBody).includes(user.password_hash)); assert.ok(!JSON.stringify(meBody).includes(user.password_salt));
+assert.equal((await getUser(request('/api/auth/me', { cookie: loginCookie }), DB)).id, user.id);
+console.log('PASS: peppered PBKDF2 hashes, hashed sessions, secure HttpOnly cookie, origin guard and sanitized own profile');
+
+const loginHash = await digest(loginCookie.split('=')[1]);
+DB.sqlite.prepare('UPDATE sessions SET expires_at=? WHERE token_hash=?').run(new Date(Date.now() + 86400000).toISOString(), loginHash);
+const renewal = await call(auth, request('/api/auth/me', { cookie: loginCookie }), env);
+assert.equal(renewal.status, 200); assert.equal(cookieOf(renewal), loginCookie);
+assert.ok(Date.parse(DB.sqlite.prepare('SELECT expires_at FROM sessions WHERE token_hash=?').get(loginHash).expires_at) > Date.now() + 29 * 86400000);
+DB.sqlite.prepare('UPDATE sessions SET expires_at=? WHERE token_hash=?').run(new Date(Date.now() + 86400000).toISOString(), loginHash);
+DB.before = sql => { if (sql.startsWith('UPDATE sessions SET expires_at=')) { DB.before = null; DB.sqlite.prepare('DELETE FROM sessions WHERE token_hash=?').run(loginHash); } };
+const race = await call(auth, request('/api/auth/me', { cookie: loginCookie }), env);
+assert.equal(race.headers.get('Set-Cookie'), null); assert.equal(DB.sqlite.prepare('SELECT COUNT(*) total FROM sessions WHERE token_hash=?').get(loginHash).total, 0);
+assert.equal((await (await call(auth, request('/api/auth/me', { cookie: loginCookie }), env)).json()).user, null);
+console.log('PASS: session renewal, logout race does not reinsert a deleted token');
+
+const imageCookie = account.cookie;
+const png = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jYyQAAAAASUVORK5CYII=', 'base64'));
+const upload = await call(media, request('/api/profile/avatar?x=25&y=70&zoom=140', { method: 'POST', cookie: imageCookie, body: png, headers: { 'Content-Type': 'image/png' } }), env);
+assert.equal(upload.status, 200); const avatar = await upload.json(); assert.deepEqual(avatar.avatarFrame, { x: 25, y: 70, zoom: 140 });
+const photo = await call(media, request(avatar.avatar), env); assert.equal(photo.headers.get('Content-Type'), 'image/png'); assert.deepEqual(new Uint8Array(await photo.arrayBuffer()), png); assert.equal(photo.headers.get('X-Content-Type-Options'), 'nosniff');
+const crop = await call(media, request('/api/profile/avatar/crop', { method: 'POST', cookie: imageCookie, data: { x: 80, y: 20, zoom: 200 } }), env); assert.equal(crop.status, 200);
+assert.equal((await call(media, request('/api/profile/avatar/crop?x=101', { method: 'POST', cookie: imageCookie }), env)).status, 400);
+assert.equal((await call(media, request('/api/profile/avatar', { method: 'POST', cookie: imageCookie, body: '<svg xmlns="http://www.w3.org/2000/svg"></svg>' }), env)).status, 415);
+assert.equal((await call(media, request('/api/profile/avatar', { method: 'POST', cookie: imageCookie, body: new Uint8Array(MAX_AVATAR_BYTES + 1) }), env)).status, 413);
+assert.equal((await call(media, request('/api/profile/avatar/reset', { method: 'POST' }), env)).status, 401);
+const allocated = DB.sqlite.prepare('SELECT byte_length bytes FROM profile_media WHERE user_id=?').get(user.id).bytes; assert.ok(allocated <= MAX_AVATAR_BYTES); assert.equal(MAX_TOTAL_AVATAR_BYTES, 256 * 1024 * 1024);
+const reset = await call(media, request('/api/profile/avatar/reset', { method: 'POST', cookie: imageCookie }), env); assert.equal(reset.status, 200); assert.equal(DB.sqlite.prepare('SELECT COUNT(*) total FROM profile_media WHERE user_id=?').get(user.id).total, 0);
+console.log('PASS: real binary avatar storage, crop validation, SVG rejection, stream byte cap and owner-only reset');
+
+const profile = await call(auth, request('/api/auth/profile', { method: 'POST', cookie: imageCookie, data: { name: 'Dragon Reader', bio: 'Manga e histórias.', nameColor: 'violet', identity: { cover: 'nebula', frame: 'crystal', title: 'Guardião dos mangás' } } }), env);
+assert.equal(profile.status, 200); const profileData = await profile.json(); assert.equal(profileData.user.avatar, '/assets/avatar-default.svg'); assert.equal(profileData.user.identity.title, 'Guardião dos mangás');
+assert.equal((await call(auth, request('/api/auth/profile', { method: 'POST', cookie: imageCookie, data: { identity: { title: '<script>bad</script>' } } }), env)).status, 400);
+assert.equal((await call(auth, request('/api/auth/delete', { method: 'POST', cookie: imageCookie, data: { password: 'wrong-password' } }), env)).status, 401);
+const deletion = await call(auth, request('/api/auth/delete', { method: 'POST', cookie: imageCookie, data: { password } }), env); assert.equal(deletion.status, 200); assert.equal(DB.sqlite.prepare('SELECT COUNT(*) total FROM users').get().total, 0); assert.equal((await getUser(request('/api/auth/me', { cookie: imageCookie }), env)), null);
+await cleanupSessions(env); DB.sqlite.close();
+console.log('PASS: preset avatars removed, cover/frame/title customization and password-confirmed owner deletion');
+console.log('All account security tests passed with actual SQLite and WebCrypto.');

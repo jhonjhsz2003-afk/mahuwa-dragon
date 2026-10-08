@@ -1,0 +1,14 @@
+# Copy to .dev.vars for local Wrangler development; never commit real keys.
+# AUTH_SECRET is optional: D1 initializes a random installation secret once.
+# Set an explicit long random secret before a public deployment if preferred.
+# AUTH_SECRET=use-a-long-random-value-generated-on-your-device
+
+# Optional Gemini mode. Local OCR + basic text translation work without this key.
+# GEMINI_API_KEY=your-own-google-ai-studio-api-key
+# GEMINI_MODEL=gemini-2.5-flash
+
+# Basic public Google translation is best effort, without an SLA.
+# No MangaDex / Jikan account key is necessary for the public read-only routes.
+
+# Chave Web API do GIPHY (usada pela galeria de avatares)
+GIPHY_API_KEY=

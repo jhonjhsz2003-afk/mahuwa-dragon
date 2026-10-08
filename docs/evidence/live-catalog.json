@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-05T23:04:04.987Z",
+  "live": true,
+  "counts": {
+    "featured": 5,
+    "popular": 36,
+    "updates": 24,
+    "top": 24,
+    "manhwa": 18,
+    "manhua": 18,
+    "novels": 0,
+    "originals": 2
+  },
+  "warnings": [
+    "A fonte Jikan não respondeu. As outras fontes continuam disponíveis."
+  ],
+  "title": "Solo Leveling",
+  "chapter": "0",
+  "chapterLanguage": "hi",
+  "pageCount": 10,
+  "firstPage": {
+    "status": 200,
+    "type": "image/jpeg",
+    "bytes": 72373
+  },
+  "elapsedMs": 13834
+}

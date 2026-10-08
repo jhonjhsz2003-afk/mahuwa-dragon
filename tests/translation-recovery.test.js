@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+const keys=['document','indexedDB','SD','SDRender','SDOCR','SDProviders'];
+const originals=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+const savedFetch=globalThis.fetch;
+try{
+  const bridge=await import('../web/js/translation-bridge.js?recovery-contract');
+  let calls=0;globalThis.fetch=async()=>{calls++;return Response.json({ok:false,error:'Daily AI quota reached',code:'GEMINI_QUOTA_EXCEEDED',provider:'gemini',retryable:false,retryAfter:60,resetAt:new Date(Date.now()+120000).toISOString()},{status:429,headers:{'Retry-After':'60'}});};
+  const send=()=>bridge.postTranslation('/api/translate/vision',{dataUrl:'data:image/png;base64,AAAA'});
+  await assert.rejects(send,error=>error.status===429&&error.code==='GEMINI_QUOTA_EXCEEDED'&&error.retryable===false&&error.provider==='gemini'&&bridge.canFallbackToBasic(error));
+  await assert.rejects(send,error=>error.retryAfter>0);assert.equal(calls,1);
+  assert.equal(bridge.canFallbackToBasic(Object.assign(new Error('shared request limit'),{status:429,provider:'request'})),false);
+  assert.equal(bridge.canFallbackToBasic(new DOMException('cancelled','AbortError')),false);
+  console.log('PASS: real bridge preserves structured quota and Retry-After, suppresses duplicate AI calls and never falls back on shared request limit or cancellation (transport mocked)');
+  globalThis.document={createElement(){return{};},head:{append(script){queueMicrotask(()=>script.onload());}}};
+  globalThis.indexedDB={open(){throw new Error('No persistent cache in this test');}};
+  const source={width:600,height:2500,getContext(){return{};}},sourceHistory=[];
+  const balloon=(id,y,text,translated='')=>({id,text,translated,confidence:95,sourceLanguage:'en',box:{x:100,y,w:100,h:60},cleanupBoxes:[{x:100,y,w:100,h:60}]});
+  const first=balloon('ai',100,'FIRST','Primeira fala'),second=balloon('ocr',1800,'SECOND');
+  let visionCalls=0,textCalls=0,ocrCalls=0;
+  globalThis.SDOCR={planTiles:()=>[{x:0,y:0,w:600,h:1700},{x:0,y:1520,w:600,h:980}],extract:async(canvas)=>{assert.equal(canvas,source);ocrCalls++;return{blocks:[balloon('duplicate',100,'FIRST'),second],warnings:[]};},deduplicate:items=>items,overlapRatio:(a,b)=>a.y===b.y?1:0};
+  globalThis.SDRender={load:async()=>{source.width=600;source.height=2500;return{canvas:source,warnings:[],scale:1};},canvas(w,h){return{width:w,height:h,getContext(){return{drawImage(){}};},toDataURL:()=>`data:image/jpeg;base64,${h===1700?'AAAA':'BBBB'}`};},findSpeechBalloon:(context,block)=>block,render:async(canvas,blocks)=>{assert.equal(canvas,source);sourceHistory.push(blocks);return{dataUrl:'data:image/png;base64,AAAA',width:canvas.width,height:canvas.height,blocks,warnings:[]};}};
+  globalThis.SDProviders={vision:async()=>{visionCalls++;if(visionCalls===2)throw Object.assign(new Error('AI provider limited'),{status:429,code:'GEMINI_RATE_LIMIT',provider:'gemini'});return{blocks:[first],warnings:[]};},translate:async(texts,settings)=>{textCalls++;assert.equal(settings.engine,'local');assert.deepEqual(texts,['SECOND']);return{translations:[{text:'Segunda fala',sourceLanguage:'en'}],warnings:[],sourceLanguage:'en'};},majorityLanguage:()=> 'en'};
+  const {translateImage}=await import('../web/js/translator.js?recovery-engine');
+  const result=await translateImage('data:image/png;base64,AAAA',{engine:'gemini',sourceLanguage:'en'});
+  assert.equal(result.usedEngine,'local');assert.equal(result.fallbackCode,'GEMINI_RATE_LIMIT');assert.deepEqual(result.blocks.map(block=>block.translated),['Primeira fala','Segunda fala']);assert.equal(visionCalls,2);assert.equal(textCalls,1);assert.equal(ocrCalls,1);assert.match(result.warnings.join(' '),/OCR local/);
+  assert.equal(sourceHistory[0][0].translated,'Primeira fala');assert.equal(source.width,1);
+  const cached=await translateImage('data:image/png;base64,AAAA',{engine:'gemini',sourceLanguage:'en'});assert.equal(cached.cached,true);assert.equal(visionCalls,2);assert.equal(textCalls,1);
+  const cancel=new AbortController();cancel.abort();await assert.rejects(()=>translateImage('data:image/png;base64,BBBB',{engine:'gemini'},{signal:cancel.signal}),error=>error.name==='AbortError');assert.equal(visionCalls,2);
+  console.log('PASS: actual image pipeline retains successful AI balloons, OCR reads original canvas, translates only missing balloons, caches final result and honors cancellation (OCR/render/provider calls simulated)');
+}finally{globalThis.fetch=savedFetch;for(const key of keys){const previous=originals.get(key);if(previous)Object.defineProperty(globalThis,key,previous);else delete globalThis[key];}}

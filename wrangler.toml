@@ -1,0 +1,38 @@
+name = "mahuwa-dragon"
+main = "worker.js"
+compatibility_date = "2026-10-05"
+
+[assets]
+directory = "./web"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mahuwa-dragon-db"
+database_id = "577fa43e-45d8-4e1c-8240-6a3feb5c22f5"
+
+[triggers]
+crons = ["15 4 * * *"]
+
+[ai]
+binding = "AI"
+
+[vars]
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_VISION_USER_DAILY = "20"
+GEMINI_VISION_GLOBAL_DAILY = "500"
+GEMINI_TEXT_USER_DAILY = "100"
+GEMINI_TEXT_GLOBAL_DAILY = "2000"
+MANGADEX_USER_AGENT = "MahuwaDragon/1.0 (manga reading application)"
+
+[observability]
+enabled = false
+
+# Avatar uploads automatically use R2 when a binding named AVATARS exists.
+# Create the bucket first (for example: npx wrangler r2 bucket create mahuwa-dragon-avatars)
+# and then configure this binding in Cloudflare or uncomment the lines below:
+# [[r2_buckets]]
+# binding = "AVATARS"
+# bucket_name = "mahuwa-dragon-avatars"

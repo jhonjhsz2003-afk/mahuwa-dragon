@@ -1,0 +1,24 @@
+{
+  "name": "mahuwa-dragon",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Manga, manhwa, manhua and novels reader with integrated ScanDragon translation",
+  "scripts": {
+    "dev": "wrangler dev",
+    "preview": "node scripts/local.mjs",
+    "check": "node --experimental-vm-modules scripts/check.mjs",
+    "test": "node scripts/test.mjs",
+    "build": "npm run check && wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute mahuwa-dragon-db --local --file=db/schema.sql",
+    "db:remote": "wrangler d1 execute mahuwa-dragon-db --remote --file=db/schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "4.147.0",
+    "linkedom": "0.18.12"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
